@@ -1,4 +1,5 @@
 const STORAGE_KEY = "infinite-board-v5";
+const PILL_PALETTE = ["#7ef3ff", "#ffd54f", "#ff8a80", "#b39ddb", "#80cbc4", "#ffcc80", "#90caf9", "#a5d6a7"];
 
 const state = {
   boards: {},
@@ -6,6 +7,8 @@ const state = {
   viewport: { x: 0, y: 0, scale: 1 },
   connectMode: false,
   connectFrom: null,
+  undoStack: [],
+  isRestoring: false,
 };
 
 const els = {
@@ -31,16 +34,18 @@ const els = {
   jsonInput: document.getElementById("jsonInput"),
   jsonMessage: document.getElementById("jsonMessage"),
   cancelJson: document.getElementById("cancelJson"),
+  undoBtn: document.getElementById("undoBtn"),
 };
 
 init();
 
 function init() {
   load();
-  if (!Object.keys(state.boards).length) createBoard("Proyecto principal");
+  if (!Object.keys(state.boards).length) createBoard("Proyecto principal", { skipUndo: true });
   bindUI();
   renderBoards();
   renderBoard();
+  updateUndoButton();
 }
 
 function bindUI() {
@@ -63,6 +68,7 @@ function bindUI() {
   els.addEventRow.addEventListener("click", () => addTimelineRow("event"));
   els.addPeriodRow.addEventListener("click", () => addTimelineRow("period"));
   els.cancelTimeline.addEventListener("click", () => els.timelineDialog.close("cancel"));
+  els.undoBtn?.addEventListener("click", undoLastAction);
 
   let panning = false;
   let start = { x: 0, y: 0 };
@@ -97,6 +103,47 @@ function bindUI() {
   });
 }
 
+
+function snapshotState() {
+  return {
+    boards: JSON.parse(JSON.stringify(state.boards)),
+    activeBoardId: state.activeBoardId,
+    viewport: JSON.parse(JSON.stringify(state.viewport)),
+  };
+}
+
+function pushUndoState() {
+  if (state.isRestoring) return;
+  const snap = snapshotState();
+  const serialized = JSON.stringify(snap);
+  if (state.undoStack.length && JSON.stringify(state.undoStack[state.undoStack.length - 1]) === serialized) return;
+  state.undoStack.push(snap);
+  if (state.undoStack.length > 80) state.undoStack.shift();
+  updateUndoButton();
+}
+
+function updateUndoButton() {
+  if (!els.undoBtn) return;
+  els.undoBtn.disabled = state.undoStack.length === 0;
+}
+
+function undoLastAction() {
+  if (!state.undoStack.length) return;
+  const previous = state.undoStack.pop();
+  state.isRestoring = true;
+  state.boards = previous.boards || {};
+  state.activeBoardId = previous.activeBoardId || Object.keys(state.boards)[0] || null;
+  state.viewport = previous.viewport || state.viewport;
+  state.connectFrom = null;
+  state.connectMode = false;
+  els.connectMode.classList.remove("active");
+  save();
+  state.isRestoring = false;
+  renderBoards();
+  renderBoard();
+  updateUndoButton();
+}
+
 function importJson(raw) {
   try {
     const trimmed = raw.trim();
@@ -109,6 +156,7 @@ function importJson(raw) {
       parsed = parseTsvBoard(trimmed);
     }
 
+    pushUndoState();
     if (Array.isArray(parsed)) {
       applyImportedBoard({ name: "Importado", nodes: parsed, connections: [] });
     } else if (parsed.nodes) {
@@ -176,6 +224,7 @@ function parseTsvBoard(tsvRaw) {
 }
 
 function applyImportedBoard(boardData) {
+  if (!options.skipUndo) pushUndoState();
   const id = crypto.randomUUID();
   const nodes = (boardData.nodes || []).map((n, i) => ({
     id: n.id || crypto.randomUUID(),
@@ -235,6 +284,7 @@ async function addNode(type) {
     base.data.items = items.length ? items : [{ kind: "event", label: "Inicio", date: "2026-01-10" }];
   }
 
+  pushUndoState();
   board.nodes.push(base);
   save();
   renderBoard();
@@ -300,6 +350,7 @@ function renderBoards() {
     remove.textContent = "🗑";
     remove.onclick = () => {
       if (Object.keys(state.boards).length === 1) return;
+      pushUndoState();
       delete state.boards[board.id];
       if (state.activeBoardId === board.id) state.activeBoardId = Object.keys(state.boards)[0];
       save(); renderBoards(); renderBoard();
@@ -307,6 +358,10 @@ function renderBoards() {
     li.append(name, remove);
     els.boardList.append(li);
   });
+}
+
+function closeAllPalettes() {
+  document.querySelectorAll(".pill-palette.open").forEach((p) => p.classList.remove("open"));
 }
 
 function renderBoard() {
@@ -367,29 +422,47 @@ function renderBoard() {
     if (canResizePill) {
       smallerBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
+        pushUndoState();
         node.pillScale = Math.max(0.7, (node.pillScale || 1) - 0.1);
         save();
         renderBoard();
       });
       biggerBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
+        pushUndoState();
         node.pillScale = Math.min(1.8, (node.pillScale || 1) + 0.1);
         save();
         renderBoard();
       });
 
+      const palette = document.createElement("div");
+      palette.className = "pill-palette";
+      PILL_PALETTE.forEach((hex) => {
+        const swatch = document.createElement("button");
+        swatch.type = "button";
+        swatch.className = "pill-swatch";
+        swatch.style.background = hex;
+        swatch.title = `Usar ${hex}`;
+        swatch.addEventListener("click", (e) => {
+          e.stopPropagation();
+          pushUndoState();
+          node.pillColor = hex;
+          save();
+          renderBoard();
+        });
+        palette.append(swatch);
+      });
+      el.querySelector(".header-actions").append(palette);
+
       colorBtn.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        const picked = prompt("Color de pildora (hex, por ejemplo #ffd54f):", node.pillColor || "#7ef3ff");
-        if (!picked) return;
-        node.pillColor = picked.trim();
-        save();
-        renderBoard();
+        palette.classList.toggle("open");
       });
     }
 
     el.querySelector(".delete").addEventListener("click", (ev) => {
       ev.stopPropagation();
+      pushUndoState();
       board.nodes = board.nodes.filter((n) => n.id !== node.id);
       board.connections = board.connections.filter((c) => c.from !== node.id && c.to !== node.id);
       if (state.connectFrom === node.id) state.connectFrom = null;
@@ -406,6 +479,7 @@ function renderBoard() {
     });
     el.addEventListener("click", (ev) => {
       ev.stopPropagation();
+      closeAllPalettes();
       if (!state.connectMode || moved || ev.target.closest("[contenteditable=\"true\"]")) return;
       connectNode(node.id);
     });
@@ -423,7 +497,10 @@ function connectNode(targetId) {
   if (!state.connectFrom) { state.connectFrom = targetId; renderBoard(); return; }
   if (state.connectFrom === targetId) { state.connectFrom = null; renderBoard(); return; }
   const exists = board.connections.some((c) => (c.from === state.connectFrom && c.to === targetId) || (c.from === targetId && c.to === state.connectFrom));
-  if (!exists) board.connections.push({ id: crypto.randomUUID(), from: state.connectFrom, to: targetId });
+  if (!exists) {
+    pushUndoState();
+    board.connections.push({ id: crypto.randomUUID(), from: state.connectFrom, to: targetId });
+  }
   state.connectFrom = null;
   save();
   renderBoard();
@@ -501,6 +578,7 @@ function videoEmbed(url = "") {
 
 function dragNode(ev, node, onMoveDetected) {
   ev.preventDefault();
+  pushUndoState();
   const start = { mouseX: ev.clientX, mouseY: ev.clientY, nodeX: node.x, nodeY: node.y };
   function onMove(e) {
     const dx = (e.clientX - start.mouseX) / state.viewport.scale;
@@ -521,6 +599,7 @@ function dragNode(ev, node, onMoveDetected) {
 
 function resizeNode(ev, node) {
   ev.preventDefault();
+  pushUndoState();
   const start = { mouseX: ev.clientX, mouseY: ev.clientY, width: node.width || 320, height: node.height || 200 };
   function onMove(e) {
     const dx = (e.clientX - start.mouseX) / state.viewport.scale;
@@ -570,6 +649,8 @@ function drawConnection(conn, board) {
   hit.setAttribute("title", "Borrar conexión");
   hit.addEventListener("click", (ev) => {
     ev.stopPropagation();
+    pushUndoState();
+    pushUndoState();
     board.connections = board.connections.filter((c) => c.id !== conn.id);
     save();
     renderBoard();
@@ -592,13 +673,14 @@ function drawConnection(conn, board) {
 }
 
 
-function createBoard(name) {
+function createBoard(name, options = {}) {
   const id = crypto.randomUUID();
   state.boards[id] = { id, name, nodes: [], connections: [] };
   state.activeBoardId = id;
   save();
   renderBoards();
   renderBoard();
+  updateUndoButton();
 }
 
 function activeBoard() {
@@ -622,6 +704,7 @@ function load() {
 
 function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ boards: state.boards, activeBoardId: state.activeBoardId, viewport: state.viewport }));
+  updateUndoButton();
 }
 
 
