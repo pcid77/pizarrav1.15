@@ -199,6 +199,13 @@ dialog {
 .json-message { min-height: 1.2rem; color: #ffd3b4; }
 
 
+.media-editor { display: grid; gap: .45rem; }
+.media-url { width: 100%; }
+.media-hint { font-size: .78rem; color: #9db7d8; }
+.media-preview img { max-width: 100%; max-height: 240px; border-radius: .5rem; display: block; }
+.media-preview iframe { width: 100%; border: 0; border-radius: .5rem; }
+
+
 #dataSection {
   margin-top: auto;
   padding-top: .8rem;
@@ -206,9 +213,6 @@ dialog {
 }
 
 
-.sync-cloud { margin-top: .55rem; display: grid; gap: .45rem; }
 
 #loadFileInput { display: none; }
 
-.drive-sync { margin-top: .45rem; }
-#driveWebhook { width: 100%; }
